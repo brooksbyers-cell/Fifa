@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D FIFA-Style Soccer</title>
+    <style>
+        :root {
+            --home-color: #a50044;
+            --away-color: #ffffff;
+        }
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', sans-serif; background: #000; }
+        
+        /* HUD & UI */
+        #ui-layer {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 10;
+        }
+        .scoreboard {
+            position: absolute; top: 20px; left: 50%;
+            transform: translateX(-50%);
+            display: flex; background: rgba(0,0,0,0.8);
+            color: white; padding: 10px 20px; border-radius: 8px;
+            font-weight: bold; font-size: 20px; pointer-events: auto;
+        }
+        .score-box { padding: 0 15px; }
+        .timer { border-left: 2px solid #555; padding-left: 15px; color: #ffcc00; }
+        
+        .controls-hint {
+            position: absolute; bottom: 20px; left: 20px;
+            background: rgba(0,0,0,0.6); color: white;
+            padding: 15px; border-radius: 5px; font-size: 14px;
+        }
+        kbd { background: #444; padding: 2px 5px; border-radius: 3px; }
+
+        #goal-splash {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            font-size: 100px; color: #ffd700; font-weight: 900;
+            display: none; text-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+
+<div id="ui-layer">
+    <div class="scoreboard">
+        <div class="score-box">BAR <span id="home-score">0</span></div>
+        <div class="score-box">RMA <span id="away-score">0</span></div>
+        <div class="timer" id="match-time">00:00</div>
+    </div>
+
+    <div id="goal-splash">GOAL!</div>
+
+    <div class="controls-hint">
+        <kbd>WASD</kbd> Move | <kbd>SPACE</kbd> Shoot / Kick | <kbd>SHIFT</kbd> Sprint
+    </div>
+</div>
+
+<script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+        }
+    }
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+
+// ==========================================
+// CONFIGURATION
+// ==========================================
+const PITCH = { width: 68, length: 105, goalSize: 7.32 };
+const GAME = { gravity: 15, friction: 0.98, ballRadius: 0.25 };
+let score = { home: 0, away: 0 };
+let clock = new THREE.Clock();
+
+// ==========================================
+// SCENE SETUP
+// ==========================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 50, 150);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+document.body.appendChild(renderer.domElement);
+
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+scene.add(ambientLight);
+
+const sun = new THREE.DirectionalLight(0xffffff, 1);
+sun.position.set(20, 50, 20);
+sun.castShadow = true;
+scene.add(sun);
+
+// ==========================================
+// GAME OBJECTS
+// ==========================================
+
+// Pitch
+const pitchGeo = new THREE.PlaneGeometry(PITCH.length, PITCH.width);
+const pitchMat = new THREE.MeshStandardMaterial({ color: 0x2d7a2d });
+const pitch = new THREE.Mesh(pitchGeo, pitchMat);
+pitch.rotation.x = -Math.PI / 2;
+pitch.receiveShadow = true;
+scene.add(pitch);
+
+// Simple Goals
+function createGoal(zPos) {
+    const group = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff });
+    const post = new THREE.BoxGeometry(0.2, 2.44, 0.2);
+    
+    const lp = new THREE.Mesh(post, mat); lp.position.set(-PITCH.goalSize/2, 1.22, 0);
+    const rp = new THREE.Mesh(post, mat); rp.position.set(PITCH.goalSize/2, 1.22, 0);
+    const cb = new THREE.Mesh(new THREE.BoxGeometry(PITCH.goalSize, 0.2, 0.2), mat);
+    cb.position.set(0, 2.44, 0);
+
+    group.add(lp, rp, cb);
+    group.position.z = zPos;
+    scene.add(group);
+}
+createGoal(-PITCH.length / 2);
+createGoal(PITCH.length / 2);
+
+// Ball
+const ball = {
+    mesh: new THREE.Mesh(
+        new THREE.SphereGeometry(GAME.ballRadius, 16, 16),
+        new THREE.MeshStandardMaterial({ color: 0xffffff })
+    ),
+    vel: new THREE.Vector3(0, 0, 0),
+    update: function(dt) {
+        // Physics
+        if (this.mesh.position.y > GAME.ballRadius) this.vel.y -= GAME.gravity * dt;
+        this.mesh.position.add(this.vel.clone().multiplyScalar(dt));
+
+        // Ground Contact
+        if (this.mesh.position.y <= GAME.ballRadius) {
+            this.mesh.position.y = GAME.ballRadius;
+            this.vel.y *= -0.5;
+            this.vel.x *= GAME.friction;
+            this.vel.z *= GAME.friction;
+        }
+
+        // Goal Check
+        if (Math.abs(this.mesh.position.z) > PITCH.length / 2) {
+            if (Math.abs(this.mesh.position.x) < PITCH.goalSize / 2) {
+                triggerGoal();
+            } else {
+                this.vel.z *= -0.8; // Bounce off wall
+            }
+        }
+    }
+};
+ball.mesh.castShadow = true;
+ball.mesh.position.y = 5;
+scene.add(ball.mesh);
+
+// Player
+const player = {
+    mesh: new THREE.Mesh(
+        new THREE.CapsuleGeometry(0.4, 1, 4, 8),
+        new THREE.MeshStandardMaterial({ color: 0xa50044 })
+    ),
+    move: new THREE.Vector3(),
+    speed: 12,
+    update: function(dt, keys) {
+        this.move.set(0, 0, 0);
+        if (keys['w']) this.move.z -= 1;
+        if (keys['s']) this.move.z += 1;
+        if (keys['a']) this.move.x -= 1;
+        if (keys['d']) this.move.x += 1;
+
+        if (this.move.length() > 0) {
+            this.move.normalize();
+            const s = keys['shift'] ? this.speed * 1.5 : this.speed;
+            this.mesh.position.add(this.move.multiplyScalar(s * dt));
+            this.mesh.rotation.y = Math.atan2(this.move.x, this.move.z);
+        }
+
+        // Kick logic
+        const dist = this.mesh.position.distanceTo(ball.mesh.position);
+        if (dist < 1.5 && keys[' ']) {
+            const dir = new THREE.Vector3().subVectors(ball.mesh.position, this.mesh.position).normalize();
+            ball.vel.add(dir.multiplyScalar(15));
+            ball.vel.y += 5; // Lob
+        }
+    }
+};
+player.mesh.position.y = 1;
+player.mesh.castShadow = true;
+scene.add(player.mesh);
+
+// ==========================================
+// INPUTS & LOOP
+// ==========================================
+const keys = {};
+window.onkeydown = (e) => keys[e.key.toLowerCase()] = true;
+window.onkeyup = (e) => keys[e.key.toLowerCase()] = false;
+
+function triggerGoal() {
+    document.getElementById('goal-splash').style.display = 'block';
+    ball.mesh.position.set(0, 5, 0);
+    ball.vel.set(0, 0, 0);
+    setTimeout(() => {
+        document.getElementById('goal-splash').style.display = 'none';
+    }, 2000);
+}
+
+function animate() {
+    const dt = clock.getDelta();
+    
+    player.update(dt, keys);
+    ball.update(dt);
+
+    // Camera follow
+    const camTarget = new THREE.Vector3(
+        player.mesh.position.x, 
+        15, 
+        player.mesh.position.z + 20
+    );
+    camera.position.lerp(camTarget, 0.1);
+    camera.lookAt(player.mesh.position);
+
+    renderer.render(scene, camera);
+    requestAnimationFrame(animate);
+}
+
+window.onresize = () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+};
+
+animate();
+</script>
+</body>
+</html>
